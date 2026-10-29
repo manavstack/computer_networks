@@ -1,0 +1,6 @@
+# TopoNet: Requirements for Full-Scale Interactive ARQ Protocol Simulator
+streamlit>=1.28.0
+matplotlib>=3.7.0
+pandas>=2.0.0
+numpy>=1.24.0
+networkx>=3.0
