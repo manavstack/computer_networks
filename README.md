@@ -107,24 +107,8 @@ cn_project/
 ├── topology_engine.py          # Detailed Workflow Engine for Bus, Star, Ring & Mesh
 ├── graph_metrics.py            # Graph Theory Formulas, Cost Modeling & Radar Scores
 ├── interactive_visualizer.py   # High-Resolution Diagram & Interactive SVG Canvas
-├── viva_quiz.py                # 10-Question Quiz on the 4 Topologies & Cheat Sheet
 ├── tests.py                    # 9 Comprehensive Unit Tests (100% Pass)
 ├── requirements.txt            # Python Dependencies
 └── README.md                   # Capstone Project Documentation
 ```
 
----
-
-## 🎯 Viva Voce Sample Questions & Answers
-
-**Q1: What is the formula for the number of links in a Full Mesh network with 10 computers?**
-- **Answer**: $L = \frac{N(N-1)}{2} = \frac{10 \times 9}{2} = \mathbf{45\ \text{links}}$, and each computer requires $N - 1 = \mathbf{9\ \text{ports}}$.
-
-**Q2: What is the purpose of the 50Ω terminator in Bus topology?**
-- **Answer**: Terminators match the characteristic impedance of the coaxial cable to absorb electromagnetic wave reflections. Without them, signals bounce back and create destructive standing waves, corrupting all frames on the bus.
-
-**Q3: How does a Switch eliminate collisions in a Star topology?**
-- **Answer**: The switch inspects the source MAC of incoming frames to build a CAM table. When forwarding, it transmits frames only to the designated destination port, establishing a private microsegmented link and shrinking the collision domain to each individual cable link.
-
-**Q4: How does a transmitting station in a Token Ring know that the packet reached the destination?**
-- **Answer**: The destination station modifies the trailing Frame Status byte by setting the Address Recognized ($A=1$) and Frame Copied ($C=1$) bits. When the frame completes its 360° circuit back to the sender, the sender verifies these bits before releasing the token.

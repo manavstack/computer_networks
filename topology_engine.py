@@ -31,6 +31,18 @@ class WorkflowStep:
     status: str      # 'in_progress', 'delivered', 'dropped', 'filtered'
 
 
+@dataclass
+class CollisionResult:
+    has_collision: bool
+    affected_links: List[Tuple[str, str]]
+    jammed_nodes: List[str]
+    collision_domain_explanation: str
+    backoff_time_microseconds: float
+    delivered_pairs: List[Tuple[str, str]]
+    failed_pairs: List[Tuple[str, str]]
+    algorithm_log: List[str]
+
+
 class NetworkTopology:
     def __init__(
         self,
@@ -577,3 +589,198 @@ class NetworkTopology:
                     ))
 
         return steps
+
+    # ──────────────────────────────────────────────────────────
+    #  CONCURRENT TRAFFIC & COLLISION SIMULATION ENGINE
+    # ──────────────────────────────────────────────────────────
+    def simulate_concurrent_traffic(self, pairs: List[Tuple[str, str]]) -> CollisionResult:
+        """
+        Simulates simultaneous transmissions to demonstrate Collision Domains:
+        - Bus: 1 Shared Collision Domain -> Guaranteed collision on concurrent transmission!
+        - Star (Hub): 1 Shared Collision Domain -> Collision at the central hub repeater!
+        - Star (Switch): N Independent Collision Domains (Microsegmentation) -> Zero collisions!
+        - Ring: Deterministic Token Passing -> Token arbitration queues transmission, Zero collisions!
+        - Mesh: Dedicated Point-to-Point lines -> True wire-speed concurrent transmission, Zero collisions!
+        """
+        if len(pairs) < 2:
+            return CollisionResult(
+                has_collision=False,
+                affected_links=[],
+                jammed_nodes=[],
+                collision_domain_explanation="Single transmission active. Channel medium is clear.",
+                backoff_time_microseconds=0.0,
+                delivered_pairs=pairs,
+                failed_pairs=[],
+                algorithm_log=["Single flow active: No contention on physical medium."]
+            )
+
+        p1_src, p1_dst = pairs[0]
+        p2_src, p2_dst = pairs[1]
+
+        log = [
+            f"Simultaneous transmission initiated: [{p1_src} ➔ {p1_dst}] and [{p2_src} ➔ {p2_dst}]"
+        ]
+
+        if self.topo_type == TopologyType.BUS:
+            # Shared coaxial cable: 1 Collision domain
+            jam_nodes = [p1_src, p2_src]
+            # Standard IEEE 802.3 CSMA/CD slot time: 51.2 microseconds (at 10 Mbps)
+            slot_time_us = 51.2
+            backoff_us = 1 * slot_time_us  # r=1 backoff slot
+
+            log.append("❌ COLLISION DETECTED on central coaxial backbone trunk!")
+            log.append("⚡ CSMA/CD triggered: Stations detect voltage rise above collision threshold (+/- 1.5V).")
+            log.append("📢 32-bit Jamming Signal injected onto the bus to alert all connected nodes.")
+            log.append(f"⏱️ Binary Exponential Backoff Algorithm invoked: Slot Time = {slot_time_us} μs, Waiting {backoff_us} μs before retry.")
+
+            return CollisionResult(
+                has_collision=True,
+                affected_links=[(f"Tap_{p1_src.split('_')[1]}", f"Tap_{p2_src.split('_')[1]}")],
+                jammed_nodes=jam_nodes,
+                collision_domain_explanation=(
+                    "BUS TOPOLOGY has strictly 1 Collision Domain. Because all stations tap into a single shared "
+                    "coaxial cable, simultaneous transmissions collide immediately on the trunk. Both frames are destroyed."
+                ),
+                backoff_time_microseconds=backoff_us,
+                delivered_pairs=[],
+                failed_pairs=pairs,
+                algorithm_log=log
+            )
+
+        elif self.topo_type == TopologyType.STAR and self.star_mode == "Hub":
+            # Star with Hub: Layer 1 repeating -> 1 Collision domain
+            log.append("❌ COLLISION DETECTED inside Central Hub!")
+            log.append("Hub repeats all electrical signals to all ports indiscriminately.")
+            log.append("Incoming packets collided in the shared repeater backplane.")
+
+            return CollisionResult(
+                has_collision=True,
+                affected_links=[(p1_src, "Central_Hub"), (p2_src, "Central_Hub")],
+                jammed_nodes=["Central_Hub", p1_src, p2_src],
+                collision_domain_explanation=(
+                    "STAR (HUB MODE) is a Physical Star but Logical Bus. The hub contains a single shared backplane "
+                    "(1 Collision Domain). Simultaneous transmissions collide at the hub ports."
+                ),
+                backoff_time_microseconds=51.2,
+                delivered_pairs=[],
+                failed_pairs=pairs,
+                algorithm_log=log
+            )
+
+        elif self.topo_type == TopologyType.STAR and self.star_mode == "Switch":
+            # Switch microsegmentation: collision-free!
+            log.append("✅ ZERO COLLISIONS: Layer 2 Switch provides Microsegmentation!")
+            log.append(f"Port {p1_src} and Port {p2_src} operate on independent full-duplex lines.")
+            log.append("Internal Switch Fabric buffers and switches packets independently via CAM lookup.")
+
+            return CollisionResult(
+                has_collision=False,
+                affected_links=[(p1_src, "Central_Switch"), (p2_src, "Central_Switch")],
+                jammed_nodes=[],
+                collision_domain_explanation=(
+                    "STAR (SWITCH MODE) isolates every port into its OWN private Collision Domain (N domains). "
+                    "Full-duplex switching with internal ingress/egress frame buffers eliminates collisions entirely!"
+                ),
+                backoff_time_microseconds=0.0,
+                delivered_pairs=pairs,
+                failed_pairs=[],
+                algorithm_log=log
+            )
+
+        elif self.topo_type == TopologyType.RING:
+            # Token Ring: Token arbitration guarantees zero collision
+            log.append("✅ ZERO COLLISIONS: IEEE 802.5 Token Ring Arbitration!")
+            log.append(f"{p1_src} captured the FREE token first and has exclusive transmission rights.")
+            log.append(f"{p2_src} detects Token is BUSY, buffers its frame in memory, and peacefully waits for the next cycle.")
+
+            return CollisionResult(
+                has_collision=False,
+                affected_links=[],
+                jammed_nodes=[],
+                collision_domain_explanation=(
+                    "RING TOPOLOGY uses deterministic Token Passing. Only 1 station holds the token at any instant, "
+                    "guaranteeing mathematically 0% probability of collision!"
+                ),
+                backoff_time_microseconds=0.0,
+                delivered_pairs=[pairs[0]],
+                failed_pairs=[],
+                algorithm_log=log
+            )
+
+        else:
+            # Full Mesh: Dedicated links -> 100% wire-speed concurrency!
+            log.append("✅ ZERO COLLISIONS: Full Mesh Dedicated Point-to-Point Lines!")
+            log.append(f"Link [{p1_src} ⟷ {p1_dst}] and Link [{p2_src} ⟷ {p2_dst}] are completely physically separate dedicated cables.")
+            log.append("Both pairs transmit concurrently at 100% full wire-speed bandwidth with zero contention!")
+
+            return CollisionResult(
+                has_collision=False,
+                affected_links=[(p1_src, p1_dst), (p2_src, p2_dst)],
+                jammed_nodes=[],
+                collision_domain_explanation=(
+                    "FULL MESH TOPOLOGY provides dedicated point-to-point physical links between all nodes. "
+                    "Every communication channel is completely isolated with 0% shared medium and maximum security."
+                ),
+                backoff_time_microseconds=0.0,
+                delivered_pairs=pairs,
+                failed_pairs=[],
+                algorithm_log=log
+            )
+
+    # ──────────────────────────────────────────────────────────
+    #  PHYSICAL LATENCY & DELAY CALCULATION ENGINE
+    # ──────────────────────────────────────────────────────────
+    def calculate_latency(
+        self,
+        source: str,
+        destination: str,
+        payload_bytes: int = 1500,
+        bandwidth_mbps: float = 100.0,
+        propagation_speed_mps: float = 2.0e8,
+    ) -> Dict[str, float]:
+        """
+        Calculates exact network delays:
+        - Transmission Delay: T_tx = (L * 8) / R
+        - Propagation Delay: T_prop = distance / v
+        - End-to-End Latency: T_total = T_tx + T_prop + T_proc + T_queue
+        """
+        active_g = self.get_active_graph()
+        if not nx.has_path(active_g, source, destination):
+            return {
+                "hops": 0,
+                "distance_meters": 0.0,
+                "t_tx_ms": 0.0,
+                "t_prop_ms": 0.0,
+                "t_total_ms": 0.0,
+                "is_reachable": False
+            }
+
+        path = nx.shortest_path(active_g, source, destination)
+        hops = len(path) - 1
+
+        # Sum distances along path
+        total_dist_m = 0.0
+        for i in range(len(path) - 1):
+            edge_data = self.graph.get_edge_data(path[i], path[i+1], {})
+            total_dist_m += edge_data.get("length_m", 15.0)
+
+        # Transmission delay: (L * 8) / (R * 10^6) seconds -> ms
+        t_tx_ms = (payload_bytes * 8.0) / (bandwidth_mbps * 1e6) * 1000.0
+        # Propagation delay: distance / speed -> ms
+        t_prop_ms = (total_dist_m / propagation_speed_mps) * 1000.0
+        # Switching processing delay: 0.01 ms per intermediate switch
+        t_proc_ms = max(0, hops - 1) * 0.01
+
+        t_total_ms = (t_tx_ms * hops) + t_prop_ms + t_proc_ms
+
+        return {
+            "hops": hops,
+            "path": path,
+            "distance_meters": round(total_dist_m, 1),
+            "t_tx_ms": round(t_tx_ms, 4),
+            "t_prop_ms": round(t_prop_ms, 5),
+            "t_proc_ms": round(t_proc_ms, 4),
+            "t_total_ms": round(t_total_ms, 4),
+            "is_reachable": True
+        }
+

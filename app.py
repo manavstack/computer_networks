@@ -19,14 +19,14 @@ from graph_metrics import (
     compute_topology_metrics,
     generate_4_topologies_comparison_matrix,
     generate_4_topologies_radar_scores,
-    estimate_installation_cost
+    estimate_installation_cost,
+    generate_bill_of_materials,
 )
 from interactive_visualizer import (
     draw_topology_graph,
     draw_topology_radar_chart,
     render_topology_interactive_svg
 )
-from viva_quiz import TOPOLOGY_QUIZ_QUESTIONS, VIVA_TOPOLOGY_CHEAT_SHEET
 
 # ──────────────────────────────────────────────────────────
 #  STREAMLIT CONFIG & THEME
@@ -43,12 +43,21 @@ st.markdown("""
 [data-testid="stAppViewContainer"] { background: #0b1120; color: #f8fafc; }
 [data-testid="stHeader"] { background: transparent; }
 [data-testid="stSidebar"] { background: #0f172a; border-right: 1px solid #1e293b; }
+.block-container { padding-top: 2.15rem; padding-bottom: 3rem; max-width: 1450px; }
+h1, h2, h3 { letter-spacing: -0.025em; }
+div[data-testid="stVerticalBlockBorderWrapper"] {
+    background: linear-gradient(145deg, rgba(30,41,59,.72), rgba(15,23,42,.92));
+    border-color: #334155 !important; border-radius: 14px;
+}
 div[data-testid="stMetric"] {
     background: #1e293b; border: 1px solid #334155; border-radius: 10px;
     padding: 12px 16px; box-shadow: 0 4px 12px rgba(0,0,0,0.25);
 }
 div[data-testid="stMetricValue"] { font-size: 1.45rem; font-weight: 800; color: #38bdf8; }
 div[data-testid="stMetricLabel"] { font-size: 0.75rem; font-weight: 700; color: #94a3b8; text-transform: uppercase; letter-spacing: 0.5px; }
+div.stButton > button { border-radius: 9px; font-weight: 700; border-color: #334155; }
+div.stButton > button[kind="primary"] { background: linear-gradient(90deg, #0284c7, #4f46e5); border: none; }
+div[data-testid="stDataFrame"] { border: 1px solid #334155; border-radius: 10px; overflow: hidden; }
 
 /* Custom badges */
 .badge-pill {
@@ -87,6 +96,11 @@ div[data-testid="stMetricLabel"] { font-size: 0.75rem; font-weight: 700; color: 
     padding: 12px 16px;
     margin-bottom: 10px;
 }
+.insight-card { background: linear-gradient(135deg, #172554, #1e1b4b); border: 1px solid #3730a3;
+    border-radius: 12px; padding: 14px 16px; min-height: 105px; }
+.insight-title { color: #a5b4fc; font-size: .76rem; font-weight: 800; letter-spacing: .08em; text-transform: uppercase; }
+.insight-value { color: #fff; font-size: 1.1rem; font-weight: 800; margin: 7px 0 3px; }
+.insight-note { color: #cbd5e1; font-size: .8rem; line-height: 1.35; }
 </style>
 """, unsafe_allow_html=True)
 
@@ -99,8 +113,6 @@ defaults = {
     "star_mode": "Switch",
     "bus_terminator": True,
     "current_step_idx": 0,
-    "quiz_answers": {},
-    "quiz_submitted": False,
 }
 
 for k, v in defaults.items():
@@ -122,6 +134,8 @@ def init_network():
     )
     st.session_state.net.bus_terminator_active = st.session_state.bus_terminator
     st.session_state.current_step_idx = 0
+    # A traffic result belongs to the previous topology/fault state.
+    st.session_state.pop("traffic_result", None)
 
 if "net" not in st.session_state:
     init_network()
@@ -206,15 +220,24 @@ st.markdown(
     unsafe_allow_html=True
 )
 
+# At-a-glance dashboard makes the simulator useful before drilling into a lab.
+health_label = "Connected" if metrics["is_connected"] else f"{metrics['num_components']} segments"
+dash1, dash2, dash3, dash4, dash5 = st.columns(5)
+dash1.metric("Network health", health_label)
+dash2.metric("Physical links", metrics["num_links"])
+dash3.metric("Cable required", f"{metrics['total_cable_meters']:.0f} m")
+dash4.metric("Estimated build", f"${metrics['estimated_total_cost_usd']:,.0f}")
+dash5.metric("SPOF indicators", metrics["bridges_count"])
+
 # ──────────────────────────────────────────────────────────
 #  5-TAB NAVIGATION
 # ──────────────────────────────────────────────────────────
-tab_workflow, tab_benchmark, tab_fault_lab, tab_math, tab_viva = st.tabs([
+tab_workflow, tab_benchmark, tab_fault_lab, tab_performance, tab_math = st.tabs([
     "🕹️ Interactive Topology Explorer & Workflow Animator",
     "⚔️ 4-Topology Comparative Benchmark & Radar Shootout",
     "💥 Fault Tolerance & SPOF Laboratory",
-    "📐 Graph Theory & Mathematical Calculator",
-    "🎓 Viva Voce & Knowledge Center"
+    "📡 Performance & Deployment Studio",
+    "📐 Graph Theory & Mathematical Calculator"
 ])
 
 # ==========================================================
@@ -437,7 +460,92 @@ with tab_fault_lab:
 
 
 # ==========================================================
-#  TAB 4: GRAPH THEORY & MATHEMATICAL CALCULATOR
+#  TAB 4: PERFORMANCE & DEPLOYMENT STUDIO
+# ==========================================================
+with tab_performance:
+    st.markdown("### 📡 Performance & Deployment Studio")
+    st.markdown("Turn the topology into a design decision: measure an active path, test simultaneous traffic, and export a build-ready procurement list.")
+
+    hosts = [n for n, role in net.node_roles.items() if role == "host"]
+    perf_left, perf_right = st.columns([1.08, 0.92], gap="large")
+
+    with perf_left:
+        st.markdown("#### ⏱️ Path latency estimator")
+        st.caption("Includes serialization, propagation, and intermediate forwarding delay using the current fault state.")
+        p1, p2, p3 = st.columns(3)
+        with p1:
+            latency_src = st.selectbox("From", hosts, key="latency_src")
+        with p2:
+            latency_dst = st.selectbox("To", hosts, index=1 if len(hosts) > 1 else 0, key="latency_dst")
+        with p3:
+            bandwidth = st.selectbox("Link speed", [10, 100, 1000], index=1, format_func=lambda x: f"{x} Mbps")
+        payload = st.slider("Frame payload", 64, 9000, 1500, 64, format="%d bytes")
+        latency = net.calculate_latency(latency_src, latency_dst, payload, float(bandwidth))
+
+        if latency["is_reachable"]:
+            lm1, lm2, lm3, lm4 = st.columns(4)
+            lm1.metric("Route", f"{latency['hops']} hop(s)")
+            lm2.metric("Distance", f"{latency['distance_meters']:.0f} m")
+            lm3.metric("Transmit", f"{latency['t_tx_ms']:.3f} ms")
+            lm4.metric("Total delay", f"{latency['t_total_ms']:.3f} ms")
+            st.success("Active route: " + "  →  ".join(latency["path"]))
+        else:
+            st.error("No active route exists between these devices. Restore a failed device or link in the Fault Lab.")
+
+        st.markdown("#### 🚦 Concurrent traffic & collision lab")
+        st.caption("Launch two flows at the same instant to reveal the current topology’s collision domain behavior.")
+        f1, f2, f3, f4 = st.columns(4)
+        with f1:
+            flow1_src = st.selectbox("Flow A sender", hosts, key="flow1_src")
+        with f2:
+            flow1_dst = st.selectbox("Flow A receiver", hosts, index=1 if len(hosts) > 1 else 0, key="flow1_dst")
+        with f3:
+            flow2_src = st.selectbox("Flow B sender", hosts, index=2 if len(hosts) > 2 else 0, key="flow2_src")
+        with f4:
+            flow2_dst = st.selectbox("Flow B receiver", hosts, index=3 if len(hosts) > 3 else 1, key="flow2_dst")
+
+        if st.button("Run simultaneous traffic test", type="primary", use_container_width=True):
+            st.session_state.traffic_result = net.simulate_concurrent_traffic([
+                (flow1_src, flow1_dst), (flow2_src, flow2_dst)
+            ])
+
+        traffic = st.session_state.get("traffic_result")
+        if traffic:
+            if traffic.has_collision:
+                st.error(f"Collision detected — retry after {traffic.backoff_time_microseconds:.1f} μs")
+            else:
+                delivered = len(traffic.delivered_pairs)
+                st.success(f"Collision-free transmission — {delivered} flow(s) admitted immediately")
+            st.markdown(f"<div class='insight-card'><div class='insight-title'>Collision-domain diagnosis</div><div class='insight-value'>{'Shared medium contention' if traffic.has_collision else 'Controlled / isolated medium'}</div><div class='insight-note'>{traffic.collision_domain_explanation}</div></div>", unsafe_allow_html=True)
+            with st.expander("View protocol event log"):
+                for entry in traffic.algorithm_log:
+                    st.write(entry)
+
+    with perf_right:
+        st.markdown("#### 🧾 Deployment snapshot")
+        cost = estimate_installation_cost(net)
+        st.markdown(f"<div class='insight-card'><div class='insight-title'>Estimated installation cost</div><div class='insight-value'>${cost['total_cost_usd']:,.2f}</div><div class='insight-note'>Illustrative hardware and cabling estimate for {net.num_nodes} end devices.</div></div>", unsafe_allow_html=True)
+        st.markdown("<div style='height:10px'></div>", unsafe_allow_html=True)
+        for item in cost["breakdown"]:
+            st.caption("• " + item)
+
+        st.markdown("#### 📦 Bill of materials")
+        bom = generate_bill_of_materials(net)
+        bom_display = bom.copy()
+        bom_display["Unit Price ($)"] = bom_display["Unit Price ($)"].map(lambda x: f"${x:,.2f}")
+        bom_display["Total Price ($)"] = bom_display["Total Price ($)"].map(lambda x: f"${x:,.2f}")
+        st.dataframe(bom_display, use_container_width=True, hide_index=True, height=270)
+        st.download_button(
+            "Download bill of materials (CSV)",
+            data=bom.to_csv(index=False).encode("utf-8"),
+            file_name=f"{net.topo_type.value.lower().replace(' ', '_')}_bom.csv",
+            mime="text/csv",
+            use_container_width=True,
+        )
+
+
+# ==========================================================
+#  TAB 5: GRAPH THEORY & MATHEMATICAL CALCULATOR
 # ==========================================================
 with tab_math:
     st.markdown("### 📐 Graph Theory & Mathematical Scalability Calculator")
@@ -479,52 +587,3 @@ with tab_math:
     plt.close(fig_sc)
 
 
-# ==========================================================
-#  TAB 5: VIVA VOCE & KNOWLEDGE CENTER
-# ==========================================================
-with tab_viva:
-    st.markdown("### 🎓 University Exam & Viva Voce Preparation Center")
-    st.markdown("Master topological theory and test yourself with questions professors ask during project evaluations.")
-
-    viva_tab1, viva_tab2 = st.tabs(["📝 Interactive Practice Quiz", "📖 4-Topologies Cheat Sheet & Derivations"])
-
-    with viva_tab1:
-        st.markdown("#### 🎯 10-Question Comprehensive Quiz: Bus, Star, Ring & Mesh")
-        total_q = len(TOPOLOGY_QUIZ_QUESTIONS)
-        for q in TOPOLOGY_QUIZ_QUESTIONS:
-            qid = q["id"]
-            st.markdown(f"**Q{qid}. {q['question']}**")
-            ans = st.radio(
-                f"Select answer for Q{qid}:",
-                q["options"],
-                key=f"quiz_radio_{qid}",
-                label_visibility="collapsed"
-            )
-            selected_idx = q["options"].index(ans)
-            st.session_state.quiz_answers[qid] = selected_idx
-
-        if st.button("Submit Quiz & Grade Answers", type="primary"):
-            st.session_state.quiz_submitted = True
-
-        if st.session_state.quiz_submitted:
-            correct_cnt = 0
-            st.markdown("---")
-            st.markdown("### 🏆 Quiz Results & Explanations")
-            for q in TOPOLOGY_QUIZ_QUESTIONS:
-                qid = q["id"]
-                user_ans = st.session_state.quiz_answers.get(qid, -1)
-                is_correct = (user_ans == q["correct_index"])
-                if is_correct:
-                    correct_cnt += 1
-                    st.success(f"**Q{qid}: Correct!** ✅\n\n_{q['explanation']}_")
-                else:
-                    correct_opt = q["options"][q["correct_index"]]
-                    st.error(f"**Q{qid}: Incorrect.** Correct Answer: **{correct_opt}**\n\n_{q['explanation']}_")
-
-            pct = (correct_cnt / total_q) * 100
-            st.metric("Final Score", f"{correct_cnt} / {total_q} ({pct:.0f}%)")
-            if pct >= 80:
-                st.balloons()
-
-    with viva_tab2:
-        st.markdown(VIVA_TOPOLOGY_CHEAT_SHEET)

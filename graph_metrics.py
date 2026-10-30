@@ -131,6 +131,117 @@ def estimate_installation_cost(topo: NetworkTopology) -> Dict[str, Any]:
     }
 
 
+def generate_bill_of_materials(topo: NetworkTopology) -> pd.DataFrame:
+    """Generates professional Bill of Materials (BOM) procurement dataframe."""
+    n = topo.num_nodes
+    t = topo.topo_type
+    items = []
+
+    # 1. Host Network Interface Cards
+    if t == TopologyType.MESH:
+        ports_needed = n - 1
+        items.append({
+            "Item Category": "Network Interface Cards",
+            "Component Description": f"PCIe Gigabit NIC ({ports_needed} Ports/Host)",
+            "Quantity": n,
+            "Unit Price ($)": 25.0 * ports_needed,
+            "Total Price ($)": n * 25.0 * ports_needed,
+            "Role & Justification": f"Each node requires {ports_needed} dedicated physical interfaces in Full Mesh"
+        })
+    else:
+        items.append({
+            "Item Category": "Network Interface Cards",
+            "Component Description": "Single-Port PCIe Gigabit Ethernet NIC",
+            "Quantity": n,
+            "Unit Price ($)": 25.0,
+            "Total Price ($)": n * 25.0,
+            "Role & Justification": "Provides standard host connectivity to network medium"
+        })
+
+    # 2. Physical Cables
+    if t == TopologyType.BUS:
+        trunk_len = (n - 1) * 10.0
+        items.append({
+            "Item Category": "Transmission Medium",
+            "Component Description": "RG-58 A/U 50Ω Coaxial Trunk Cable",
+            "Quantity": f"{trunk_len:.0f} meters",
+            "Unit Price ($)": 1.5,
+            "Total Price ($)": trunk_len * 1.5,
+            "Role & Justification": "Shared central transmission backbone"
+        })
+        drop_len = n * 3.0
+        items.append({
+            "Item Category": "Drop Cabling",
+            "Component Description": "Cat5e UTP Drop Line Cable",
+            "Quantity": f"{drop_len:.0f} meters",
+            "Unit Price ($)": 0.8,
+            "Total Price ($)": drop_len * 0.8,
+            "Role & Justification": "Connects individual host NICs to backbone taps"
+        })
+        items.append({
+            "Item Category": "Connectors & Hardware",
+            "Component Description": "BNC T-Connector Taps",
+            "Quantity": n,
+            "Unit Price ($)": 8.0,
+            "Total Price ($)": n * 8.0,
+            "Role & Justification": "Tap connectors splicing host lines into trunk"
+        })
+        items.append({
+            "Item Category": "Connectors & Hardware",
+            "Component Description": "50Ω BNC Terminators",
+            "Quantity": 2,
+            "Unit Price ($)": 15.0,
+            "Total Price ($)": 30.0,
+            "Role & Justification": "Impedance matching at ends to eliminate signal reflections"
+        })
+
+    elif t == TopologyType.STAR:
+        cable_len = n * 15.0
+        items.append({
+            "Item Category": "Transmission Medium",
+            "Component Description": "Cat6 UTP Solid Copper Cable (Plenum)",
+            "Quantity": f"{cable_len:.0f} meters",
+            "Unit Price ($)": 0.8,
+            "Total Price ($)": cable_len * 0.8,
+            "Role & Justification": "Independent point-to-point links from hosts to switch"
+        })
+        dev_desc = "Managed 16-Port L2 Gigabit Ethernet Switch" if topo.star_mode == "Switch" else "16-Port Passive Repeater Hub"
+        dev_cost = 250.0 if topo.star_mode == "Switch" else 75.0
+        items.append({
+            "Item Category": "Active Central Hardware",
+            "Component Description": dev_desc,
+            "Quantity": 1,
+            "Unit Price ($)": dev_cost,
+            "Total Price ($)": dev_cost,
+            "Role & Justification": "Central forwarding node with CAM address table"
+        })
+
+    elif t == TopologyType.RING:
+        cable_len = n * 25.0
+        items.append({
+            "Item Category": "Transmission Medium",
+            "Component Description": "OM3 Multimode Duplex Fiber Optic Cable",
+            "Quantity": f"{cable_len:.0f} meters",
+            "Unit Price ($)": 3.2,
+            "Total Price ($)": cable_len * 3.2,
+            "Role & Justification": "High-speed closed unidirectional circular ring loop"
+        })
+
+    elif t == TopologyType.MESH:
+        edges = topo.graph.number_of_edges()
+        cable_len = edges * 20.0
+        items.append({
+            "Item Category": "Transmission Medium",
+            "Component Description": "Dedicated OM3 Fiber Optic Link Cables",
+            "Quantity": f"{cable_len:.0f} meters ({edges} lines)",
+            "Unit Price ($)": 3.2,
+            "Total Price ($)": cable_len * 3.2,
+            "Role & Justification": f"Provides N(N-1)/2 = {edges} dedicated lines between all pairs"
+        })
+
+    return pd.DataFrame(items)
+
+
 def generate_4_topologies_comparison_matrix(num_nodes: int = 5) -> pd.DataFrame:
     """Generates direct side-by-side benchmark matrix specifically for the 4 core topologies."""
     rows = []
